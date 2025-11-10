@@ -8,14 +8,44 @@ from pptx.util import Inches, Pt
 from PIL import Image
 import wikipedia
 from openai import OpenAI
+from pptx.enum.text import PP_ALIGN
 
-#Get rid of commas and square brackets in bullet points (change prompts)
-#2 photos sometimes on page
+#2 photos sometimes on page 
+#fix bottom image formatting as hides top caption
 #Make formatting better on slides (fix bullet points so slides filled out)
 #Add image captions
 #Add speaker notes (maybe use second ai agent)
 
 ai = OpenAI(api_key=open("openAI_key.txt").read().strip())
+
+def summariseCaption(caption_text):
+    # (3) AI Agent for concise image caption summary (5-8 words)
+    if not caption_text:
+        return ""
+    try:
+        completion = ai.chat.completions.create(
+            model='gpt-3.5-turbo',
+            temperature=0.0,
+            max_tokens=30,
+            messages=[
+                {
+                    'role': 'system',
+                    'content': (
+                        "You are a caption expert. Summarize the following text into a single, "
+                        "descriptive phrase between 5 and 8 words. Do not use quotes, "
+                        "citations, or starting dashes. Output only the summarized phrase."
+                    )
+                },
+                {
+                    'role': 'user',
+                    'content': f"Summarize this caption: {caption_text}"
+                }
+            ]
+        )
+        return completion.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Error summarizing caption: {e}")
+        return caption_text.strip()[:50] + '...' # Fallback to truncated original
 
 def makeBulletPoints(visibleText):
     # Prepare the assistant call to produce strict JSON output:
@@ -29,20 +59,19 @@ def makeBulletPoints(visibleText):
                 'content': (
                     "You are an expert slide-writer that converts a chunk of text into "
                     "concise PowerPoint bullet points. STRICT RULES - follow them exactly:\n"
-                    "1) Output only valid JSON (no surrounding text). The JSON must be a "
-                    "single array of strings, e.g. [\"Bullet 1\",\"Bullet 2\"].\n"
-                    "2) Produce between 3 and 8 bullets. Never exceed 10 bullets.\n"
-                    "3) TOTAL output length must not exceed 150 words and 800 characters.\n"
-                    "4) Each bullet should be a single short sentence or phrase, ideally 6-15 words.\n"
-                    "5) Do not include citations, bracketed references, html, or source text.\n"
-                    "6) Use plain text only; do not return markdown, lists, headings or extra fields.\n"
-                    "7) If the input is short or has too little content, still return 3 concise bullets.\n"
-                    "8) If you cannot identify 3 meaningful bullets, return the three best short summary phrases.\n"
+                    "1) Output a single joined string splitting each bullet point with a line break character.\n"
+                    "2) NEVER put dashes (-) at the start of each bullet point, each bullet should be its own bit of concise info\n"
+                    "3) Produce between 3 and 8 bullets. Never exceed 10 bullets.\n"
+                    "4) TOTAL output length must not exceed 150 words and 700 characters.\n"
+                    "5) Each bullet should be a single short sentence or phrase, ideally 6-15 words\n"
+                    "6) Do not include citations, bracketed references, html, or source text.\n"
+                    "7) Use plain text only; do not return markdown, lists, headings or extra fields.\n"
+                    "8) If the input is short or has too little content, still return 3 concise bullets.\n"
+                    "9) If you cannot identify 3 meaningful bullets, return the three best short summary phrases.\n"
                     "Tone: neutral, factual, slide-friendly.\n"
                     "Example input -> output:\n"
                     "Input: 'The Hindenburg disaster occurred in 1937 when the German passenger airship LZ 129 Hindenburg caught fire while docking in New Jersey.'\n"
-                    "Output: [\"Hindenburg disaster: LZ 129 caught fire while docking (1937)\", "
-                    "\"Major loss of life and media coverage\", \"Fire highlighted hydrogen safety risks\"]"
+                    "Output: 'Hindenburg disaster: LZ 129 caught fire while docking (1937)\nMajor loss of life and media coverage\nFire highlighted hydrogen safety risks\n'"
                 )
             },
             {
@@ -113,22 +142,31 @@ def removeTags(html):
 
     return ' '.join(visibleText)
 
-def getImageSize(image):
-	imWidth, imHeight = Image.open(image).size
-	dimensions = imWidth/imHeight
-	maxWidth = 4.5
-	maxHeight = 5.5
-	maxDimension = maxWidth/maxHeight
-	if dimensions>maxDimension: #landscape
-		width = maxWidth
-		height = maxWidth*(1/dimensions)
-	else: #portrait
-		height = maxHeight
-		width = maxHeight*dimensions
-	heightLost = maxHeight-height
-	widthLost = maxWidth-width
-	
-	return width, height, widthLost, heightLost
+def getImageSize(image, maxWidth=4.5, maxHeight=5.5):
+    imWidth, imHeight = Image.open(image).size
+    dimensions = imWidth/imHeight
+    
+    maxDimension = maxWidth/maxHeight
+    
+    if dimensions > maxDimension: # Landscape ratio or wider
+        width = maxWidth
+        height = maxWidth * (1 / dimensions)
+    else: # Portrait ratio or taller
+        height = maxHeight
+        width = maxHeight * dimensions
+        
+    # Recalculate if constrained in one dimension due to the other's limit
+    if width > maxWidth:
+        width = maxWidth
+        height = maxWidth * (1 / dimensions)
+    if height > maxHeight:
+        height = maxHeight
+        width = maxHeight * dimensions
+    
+    heightLost = maxHeight - height
+    widthLost = maxWidth - width
+    
+    return width, height, widthLost, heightLost
 
 url,topic,parentFolder = searchWikipedia()
 
@@ -141,7 +179,7 @@ subTopicTitles = []
 subTopicBodies = []
 subTopicImages = []
 
-avoidedContents = ['Citations','Notes','See also','References','References 2','Sources','Further reading','External links','Gallery']
+avoidedContents = ['Citations','Notes','See also','References','References 2','Sources','Further reading','External links','Gallery','Bibliography']
 avoidedImages = [
     'Question_book-new.svg',
     'Nuvola_apps_kaboodle.svg',
@@ -150,7 +188,9 @@ avoidedImages = [
     'Climate_change_icon',
     'Symbol_list_class.svg',
     'Ambox_rewrite.svg',
-    'Ambox_important.svg'
+    'Ambox_important.svg',
+    'Wiki_letter_w_cropped.svg',
+    'Commons-logo.svg'
 ]
 
 #print(html)
@@ -200,6 +240,10 @@ for content in contents:
             else:
                 continue
 
+            if '/media/math/render/' in link: #skipping maths svgs as cant be saved as png
+                print(f"Skipping math formula image: {link}")
+                continue
+
             # basic filename and filter check
             url_path = link.split('?', 1)[0]
             filename_only = os.path.basename(url_path)
@@ -219,6 +263,11 @@ for content in contents:
                     cap = capTag.get_text(separator=' ', strip=True)
             if not cap:
                 cap = img.get('alt') or img.get('title') or ""
+
+            if cap:
+                print(f"Old caption: {cap}")
+                cap = summariseCaption(cap)
+                print(f"New caption: {cap}")
 
             ext = '.png'
 
@@ -272,13 +321,13 @@ else:
 
 subtitle.text = subtitleText
 
+
 leftText = True
 for topicTitle, body, images in zip(subTopicTitles, subTopicBodies, subTopicImages):
-    print("TITLE:", topicTitle)
-    print("BODY:", body[:2000])
-    print("IMAGES:")
+    print("ADDING SLIDE:", topicTitle)
 
     pictureSlide = bool(images)
+    imageCount = len(images) # (1) Helper variable for image count
 
     if pictureSlide:
         bullet_slide_layout = presentation.slide_layouts[3] #picture and text layout
@@ -286,95 +335,119 @@ for topicTitle, body, images in zip(subTopicTitles, subTopicBodies, subTopicImag
         bullet_slide_layout = presentation.slide_layouts[1] #just text layout
 
     slide = presentation.slides.add_slide(bullet_slide_layout)
+    #add speaker notes below
+    notes_slide = slide.notes_slide
+    notes_slide.notes_text_frame.text = body
+
+
+    slideContent = makeBulletPoints(body) # Uses AI
 
     if pictureSlide:
         fontSize = 14 #smaller font if image on slide
         if leftText:
-            subtitle = slide.placeholders[1]
-            slide.shapes._spTree.remove(slide.placeholders[2]._element)
+            subtitle = slide.placeholders[1] # Text is left
+            slide.shapes._spTree.remove(slide.placeholders[2]._element) # Remove right placeholder
         else:
-            subtitle = slide.placeholders[2]
-            slide.shapes._spTree.remove(slide.placeholders[1]._element)
+            subtitle = slide.placeholders[2] # Text is right
+            slide.shapes._spTree.remove(slide.placeholders[1]._element) # Remove left placeholder
     else:
-        fontSize = 24 #larger text if no images
         subtitle = slide.placeholders[1]
+        fontSize = 24 #larger text if no images
+
+    if len(slideContent) > 800:
+        fontSize-=6
+    elif len(slideContent) > 550:
+        fontSize-=2
 
     title = slide.shapes.title
     title.text = topicTitle
-    visibleText = body
-    slideContent = makeBulletPoints(visibleText) #uses ai to turn text into bullet points
-    '''
-    lines = slideContent.split('\n')
-    linesWithoutDashes = [line.lstrip('- ') for line in lines]
-    slideContent = '\n'.join(linesWithoutDashes)
 
-    if len(slideContent)>1200:
-        fontSize-=2
-    fontSize = Pt(fontSize)
-    '''
-    slideContent = slideContent.replace('[','').replace(']','').replace('"','')
+    # Assign bullet points to the text box
     subtitle.text = slideContent
     text_frame = subtitle.text_frame
     for paragraph in text_frame.paragraphs:
         font = paragraph.font
         font.size = Pt(fontSize)
 
+    # --- (1) TWO IMAGE PLACEMENT LOGIC ---
     if pictureSlide:
-        topicFolder = os.path.join(parentFolder, topicTitle.replace(' ', '_'))
-        # assume you saved files as img0, img1 ... with original extension .jpg (or detect)
-
-        localImagePath = os.path.join(topicFolder, 'img0.png')   # simple guess
-        width, height, widthLost, heightLost = getImageSize(localImagePath)
-
-        image = localImagePath
-        width, height, widthLost, heightLost = getImageSize(image)
-
+        # Define the image area boundaries (based on slide layout 3)
         if leftText:
-            widthFromLeft = 5
+            IMAGE_AREA_LEFT = Inches(5)
         else:
-            widthFromLeft = 0.5
+            IMAGE_AREA_LEFT = Inches(0.5)
+        IMAGE_AREA_TOP = Inches(1.5)
+        IMAGE_AREA_WIDTH = Inches(4.5)
+        IMAGE_AREA_HEIGHT = Inches(5.5)
         
-        slide.shapes.add_picture(image, Inches(widthFromLeft+widthLost/2), Inches(1.5+heightLost/2), Inches(width), Inches(height))
+        # Calculate image placement based on 1 or 2 images
+        
+        if imageCount == 1:
+            localImagePath1, captionText1 = images[0]
             
-        '''
-        caption_top = 1.5+heightLost/2 + (pic.height.inches) + 0.1  # add a small gap
+            # Use original getImageSize function, passing area limits
+            width, height, widthLost, heightLost = getImageSize(localImagePath1, maxWidth=4.5, maxHeight=5.5)
+            
+            # Place picture centered in the allocated area
+            slide.shapes.add_picture(localImagePath1, IMAGE_AREA_LEFT + Inches(widthLost/2), IMAGE_AREA_TOP + Inches(heightLost/2), Inches(width), Inches(height))
+            
+            # (3) Add Caption below the single image
+            if captionText1:
+                caption_top = IMAGE_AREA_TOP + Inches(height) + Inches(heightLost/2) + Inches(0.1) # 0.1 inch gap below image
+                caption_box = slide.shapes.add_textbox(IMAGE_AREA_LEFT, caption_top, IMAGE_AREA_WIDTH, Inches(0.5))
+                text_frame = caption_box.text_frame
+                text_frame.text = captionText1
+                text_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+                text_frame.paragraphs[0].font.size = Pt(10)
+                text_frame.paragraphs[0].font.italic = True
+                
+        elif imageCount == 2:
+            # New Max height for each stacked image (half height minus small margin)
+            MAX_H_STACKED = 2.6
+            GAP = 0.2
+            
+            localImagePath1, captionText1 = images[0]
+            localImagePath2, captionText2 = images[1]
+            
+            # Get sizes constrained by the half-height area
+            width1, height1, widthLost1, heightLost1 = getImageSize(localImagePath1, maxWidth=4.5, maxHeight=MAX_H_STACKED)
+            width2, height2, widthLost2, heightLost2 = getImageSize(localImagePath2, maxWidth=4.5, maxHeight=MAX_H_STACKED)
+            
+            # Place Image 1 (Top)
+            # Vertically center in the top half (1.5" to 1.5"+MAX_H_STACKED)
+            top_y1 = IMAGE_AREA_TOP + Inches(heightLost1/2)
+            slide.shapes.add_picture(localImagePath1, IMAGE_AREA_LEFT + Inches(widthLost1/2), top_y1, Inches(width1), Inches(height1))
+            
+            # (3) Add Caption 1
+            if captionText1:
+                caption_top1 = top_y1 + Inches(height1) + Inches(0.1)
+                caption_box1 = slide.shapes.add_textbox(IMAGE_AREA_LEFT, caption_top1-Inches(0.1), IMAGE_AREA_WIDTH, Inches(0.3))
+                text_frame1 = caption_box1.text_frame
+                text_frame1.text = captionText1
+                text_frame1.paragraphs[0].alignment = PP_ALIGN.CENTER
+                text_frame1.paragraphs[0].font.size = Pt(8)
+                text_frame1.paragraphs[0].font.italic = True
 
-        # Add text box for caption
-        textbox = slide.shapes.add_textbox(Inches(left), Inches(caption_top), Inches(width), Inches(0.5))
-        text_frame = textbox.text_frame
-        text_frame.text = caption_text or ""
-        text_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
-        text_frame.paragraphs[0].font.size = Pt(12)
-        text_frame.paragraphs[0].font.italic = True
-        '''
-    #caption
+            # Place Image 2 (Bottom)
+            # Starts right below the top half area (1.5" + MAX_H_STACKED + GAP)
+            top_y2 = IMAGE_AREA_TOP + Inches(MAX_H_STACKED) + Inches(GAP) + Inches(heightLost2/2)
+            slide.shapes.add_picture(localImagePath2, IMAGE_AREA_LEFT + Inches(widthLost2/2), top_y2+Inches(0.1), Inches(width2), Inches(height2))
 
+            # (3) Add Caption 2
+            if captionText2:
+                caption_top2 = top_y2 + Inches(height2) + Inches(0.1)
+                caption_box2 = slide.shapes.add_textbox(IMAGE_AREA_LEFT, caption_top2, IMAGE_AREA_WIDTH, Inches(0.3))
+                text_frame2 = caption_box2.text_frame
+                text_frame2.text = captionText2
+                text_frame2.paragraphs[0].alignment = PP_ALIGN.CENTER
+                text_frame2.paragraphs[0].font.size = Pt(8)
+                text_frame2.paragraphs[0].font.italic = True
+            
+    # Toggle position for the next slide (alternating text/image layout)
     leftText = not leftText
 
-# before presentation.save(powerpointName)
+# Save and open the PowerPoint
 os.makedirs(os.path.dirname(powerpointName), exist_ok=True)
 presentation.save(powerpointName)
 os.startfile(powerpointName)
 
-'''
-#Run powerpoint
-presentation.save(powerpointName)
-os.startfile(powerpointName)
-	'''
-
-'''
-# print summary
-for title, body, images in zip(subTopicTitles, subTopicBodies, subTopicImages):
-    print("TITLE:", title)
-    print("BODY:", body[:2000])
-    print("IMAGES:")
-
-    if not images:
-        print("  (none)")
-    else:
-        for link, caption in images:
-            print("  -", link)
-            if caption:
-                print("    Caption:", caption)
-    print()
-'''
