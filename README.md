@@ -21,3 +21,5 @@ BeautifulSoup4
 Requests
 
 Pillow
+
+Wikipedia python API
