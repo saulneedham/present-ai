@@ -9,49 +9,80 @@ from PIL import Image
 import wikipedia
 from openai import OpenAI
 from pptx.enum.text import PP_ALIGN
+import time
 
-#2 photos sometimes on page 
-#fix bottom image formatting as hides top caption
-#Make formatting better on slides (fix bullet points so slides filled out)
-#Add image captions
-#Add speaker notes (maybe use second ai agent)
+#------------------------------------------------------------------------
 
-ai = OpenAI(api_key=open("openAI_key.txt").read().strip())
+def searchWikipedia():
+    topicChosen = False
 
-def summariseCaption(caption_text):
-    # (3) AI Agent for concise image caption summary (5-8 words)
-    if not caption_text:
+    while not topicChosen:
+        topic = input("Enter a topic for your PowerPoint: ")
+        try:
+            results = wikipedia.search(topic, results=5)
+            
+            if not results:
+                print(f"\nTopic not found!")
+                return
+
+            print(f"\n--- Select from the following! ---")
+            
+            for i, title in enumerate(results):
+                print(f"[{i+1}] {title}")
+            
+            print("-------------------------------------------------")
+
+            try:
+                choice = int(input('Enter topic number - '))
+                topicChosen = True
+                topic = results[choice-1]
+            except Exception as e:
+                print(f"\nAn unexpected error occurred: {e}")
+
+        except wikipedia.exceptions.DisambiguationError:
+            print(f"\nThe topic '{topic}' is too general. Please be more specific.")
+
+        except Exception as e:
+            print(f"\nAn unexpected error occurred: {e}")
+
+    # make parent folder
+    parentFolder = topic.replace(' ','_')
+    os.makedirs(parentFolder, exist_ok=True)
+    url = "https://en.wikipedia.org/wiki/"+parentFolder
+
+    return url, topic, parentFolder
+
+#---------------OPENAI AGENTS----------------
+
+def summariseCaption(captionText):
+    if not captionText:
         return ""
-    try:
-        completion = ai.chat.completions.create(
-            model='gpt-3.5-turbo',
-            temperature=0.0,
-            max_tokens=30,
-            messages=[
-                {
-                    'role': 'system',
-                    'content': (
-                        "You are a caption expert. Summarize the following text into a single, "
-                        "descriptive phrase between 5 and 8 words. Do not use quotes, "
-                        "citations, or starting dashes. Output only the summarized phrase."
-                    )
-                },
-                {
-                    'role': 'user',
-                    'content': f"Summarize this caption: {caption_text}"
-                }
-            ]
-        )
-        return completion.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"Error summarizing caption: {e}")
-        return caption_text.strip()[:50] + '...' # Fallback to truncated original
+    completion = ai.chat.completions.create(
+        model='gpt-3.5-turbo',
+        temperature=0.0,
+        max_tokens=30,
+        messages=[
+            {
+                'role': 'system',
+                'content': (
+                    "You are a caption expert. Summarize the following text into a single, "
+                    "descriptive phrase between 5 and 8 words. Do not use quotes, "
+                    "citations, or starting dashes. Output only the summarized phrase."
+                )
+            },
+            {
+                'role': 'user',
+                'content': f"Summarize this caption: {captionText}"
+            }
+        ]
+    )
+    return completion.choices[0].message.content.strip()
 
 def makeBulletPoints(visibleText):
     # Prepare the assistant call to produce strict JSON output:
     completion = ai.chat.completions.create(
         model='gpt-3.5-turbo',
-        temperature=0.0,            # deterministic
+        temperature=0.0, # deterministic
         max_tokens=400,
         messages=[
             {
@@ -61,77 +92,55 @@ def makeBulletPoints(visibleText):
                     "concise PowerPoint bullet points. STRICT RULES - follow them exactly:\n"
                     "1) Output a single joined string splitting each bullet point with a line break character.\n"
                     "2) NEVER put dashes (-) at the start of each bullet point, each bullet should be its own bit of concise info\n"
-                    "3) Produce between 3 and 8 bullets. Never exceed 10 bullets.\n"
-                    "4) TOTAL output length must not exceed 150 words and 700 characters.\n"
+                    "3) You MUST produce between 4 and 8 bullet points. The total number of line breaks in your output CANNOT exceed 7 (for a maximum of 8 lines). This rule is non-negotiable.\n"
+                    "4) The absolute maximum output length is 120 words and 600 characters.\n"
                     "5) Each bullet should be a single short sentence or phrase, ideally 6-15 words\n"
                     "6) Do not include citations, bracketed references, html, or source text.\n"
                     "7) Use plain text only; do not return markdown, lists, headings or extra fields.\n"
-                    "8) If the input is short or has too little content, still return 3 concise bullets.\n"
-                    "9) If you cannot identify 3 meaningful bullets, return the three best short summary phrases.\n"
+                    "8) If the input is short or has too little content, still return 4 concise bullets.\n"
+                    "9) If you cannot identify 4 meaningful bullets, return the four best short summary phrases.\n"
                     "Tone: neutral, factual, slide-friendly.\n"
                     "Example input -> output:\n"
                     "Input: 'The Hindenburg disaster occurred in 1937 when the German passenger airship LZ 129 Hindenburg caught fire while docking in New Jersey.'\n"
-                    "Output: 'Hindenburg disaster: LZ 129 caught fire while docking (1937)\nMajor loss of life and media coverage\nFire highlighted hydrogen safety risks\n'"
+                    "Output: 'Hindenburg disaster: LZ 129 caught fire while docking (1937)\nMajor loss of life and media coverage\nFire highlighted hydrogen safety risks\nInvestigation identified cause as static electricity'"
                 )
             },
             {
                 'role': 'user',
                 'content': (
-                    "Convert the following text into slide-ready bullets as a JSON array of strings. "
+                    "Convert the following text into slide-ready bullets. "
                     "Remember the strict limits above.\n\n"
                     f"Text: {visibleText}"
                 )
             }
         ]
     )
+    return completion.choices[0].message.content
 
-    bulletPoints = completion.choices[0].message.content
-    return bulletPoints
+#---------------WEB SCRAPING FUNCTIONS----------------
 
-def searchWikipedia():
-    topicChosen = False
+def splitContent(html):
+    contents = html.split('<div class="mw-heading mw-heading2"><h2 id="')
+    contents.pop(0)
+    referencesContent = ''
 
-    while not topicChosen:
-        topic = input("Enter a topic for your PowerPoint: ")
+    for content in contents:
+        subTopicTitle = str((content.split('"'))[0]).replace('_',' ')
+        #splitting end of id tag to get subtopic title
 
-        # 2. Get the search results
-        try:
-            # Use search() to get a list of the top 5 matching titles
-            results = wikipedia.search(topic, results=5)
-            
-            if not results:
-                print(f"\nTopic not found!")
-                return
+        if subTopicTitle not in avoidedContents:
+            imgs,captions = saveImages(subTopicTitle,content,avoidedImages)
+            subTopicImages.append(list(zip(imgs, captions)))
 
-            print(f"\n--- Select from the following! ---")
-            
-            # 3. Print the titles
-            for i, title in enumerate(results):
-                print(f"[{i+1}] {title}")
-                #print(f"https://en.wikipedia.org/wiki/{title.replace(' ','_')}")
-            
-            print("-------------------------------------------------")
-            choice = ''
-            while choice not in {1,2,3,4,5}:
-                choice = int(input('Enter topic number - '))
-            topic = results[choice-1]
+            subTopicContent = re.sub(r'\[[^\]]*\]', '', removeTags(content)) #get just p tags and get rid of square brackets
+            subTopicTitles.append(subTopicTitle)
+            subTopicBodies.append(subTopicContent)
+        elif subTopicTitle in ['References','References 2']:
+            subTopicContent = extractRefs(content)
+            if len(referencesContent)<2000:
+                referencesContent += subTopicContent[:2000]+'\n'+'And more...'
 
-            topicChosen = True
-
-        except wikipedia.exceptions.DisambiguationError:
-            # This error is less likely when just searching, but good practice to keep
-            print(f"\nThe topic '{topic}' is too general. Please be more specific.")
-        except Exception as e:
-            # A basic catch-all for other network or library errors
-            print(f"\nAn unexpected error occurred: {e}")
-
-    # make parent folder
-    parentFolder = topic.replace(' ','_')
-    os.makedirs(parentFolder, exist_ok=True)
-
-    url = "https://en.wikipedia.org/wiki/"+parentFolder
-
-    return url, topic, parentFolder
+    return referencesContent,subTopicTitles,subTopicBodies,subTopicImages
 
 def removeTags(html):
     soup = BeautifulSoup(html, 'html.parser')
@@ -142,10 +151,47 @@ def removeTags(html):
 
     return ' '.join(visibleText)
 
+
+def niceRefs(html):
+    maxRefs = 8
+
+    soup = BeautifulSoup(html, 'html.parser')
+    items = soup.select('ol.references > li, .reflist li')
+    references = []
+
+    for li in items:
+        raw = (li.find('cite').get_text(" ", strip=True) if li.find('cite') else li.get_text(" ", strip=True))
+        raw = re.sub(r'^\s*(?:\^|\^?\s*[a-z]\b(?:\s+[a-z]\b)*\s*)+', '', raw, flags=re.I)
+        text = re.sub(r'\s+', ' ', raw).strip()[:300]
+
+        url = None
+        for a in li.find_all('a', href=True):
+            href = a['href']
+            if href.startswith('http://') or href.startswith('https://'):
+                url = href
+                break
+
+        references.append((text, url))
+        if len(references) == maxRefs:
+            break
+
+    return references
+
+def extractRefs(html):
+    refs = ''
+    for i, (text, url) in enumerate(niceRefs(html), start=1):
+        if url:
+            refs+=f"{i}. {text}\n   → {url}\n"
+        else:
+            refs+=f"{i}. {text}\n"
+
+    return refs
+
+#---------------IMAGE FUNCTIONS----------------
+
 def getImageSize(image, maxWidth=4.5, maxHeight=5.5):
     imWidth, imHeight = Image.open(image).size
     dimensions = imWidth/imHeight
-    
     maxDimension = maxWidth/maxHeight
     
     if dimensions > maxDimension: # Landscape ratio or wider
@@ -168,166 +214,117 @@ def getImageSize(image, maxWidth=4.5, maxHeight=5.5):
     
     return width, height, widthLost, heightLost
 
-url,topic,parentFolder = searchWikipedia()
+def saveImages(subTopicTitle,content,avoidedImages):
+    soup = BeautifulSoup(content, 'html.parser')
+    imagesSaved = 0
+    imgs = []
+    captions =[]
 
-print(url)
-headers = {"User-Agent": "Mozilla/5.0"}
-response = requests.get(url, headers=headers)
-html = response.text
+    topicFolder = os.path.join(parentFolder, subTopicTitle.replace(' ', '_'))
+    os.makedirs(topicFolder, exist_ok=True)
 
-subTopicTitles = []
-subTopicBodies = []
-subTopicImages = []
+    for img in soup.find_all('img'):
+        if imagesSaved >= 2:
+            break
 
-avoidedContents = ['Citations','Notes','See also','References','References 2','Sources','Further reading','External links','Gallery','Bibliography']
-avoidedImages = [
-    'Question_book-new.svg',
-    'Nuvola_apps_kaboodle.svg',
-    'Ambox_current_red_Asia_Australia.svg',
-    'Information_icon4.svg',
-    'Climate_change_icon',
-    'Symbol_list_class.svg',
-    'Ambox_rewrite.svg',
-    'Ambox_important.svg',
-    'Wiki_letter_w_cropped.svg',
-    'Commons-logo.svg'
-]
+        src = img.get('src') or img.get('data-src') or img.get('data-image-src') or img.get('srcset') or ''
+        if not src:
+            continue
 
-#print(html)
+        if ',' in src and ' ' in src:
+            candidates = [s.strip() for s in src.split(',') if s.strip()]
+            last = candidates[-1]
+            src = last.split()[0]
 
-contents = html.split('<div class="mw-heading mw-heading2"><h2 id="')
-#splitting each html headline at id to get subtopics
-contents.pop(0)
+        if src.startswith('//'):
+            link = 'https:' + src
+        elif src.startswith('/'):
+            link = urljoin('https://en.wikipedia.org', src)
+        elif src.startswith('http'):
+            link = src
+        else:
+            continue
 
-for content in contents:
-    subTopicTitle = str((content.split('"'))[0]).replace('_',' ')
-    #splitting end of id tag to get subtopic title
+        if '/media/math/render/' in link: #skipping maths svgs as cant be saved as png
+            continue
 
-    if subTopicTitle not in avoidedContents:
-        soup = BeautifulSoup(content, 'html.parser')
-        imgs = []         # saved local file paths
-        captions = []     # captions for saved images
-        imagesSaved = 0
+        # basic filename and filter check
+        url_path = link.split('?', 1)[0]
+        filename_only = os.path.basename(url_path)
+        if any(bad in filename_only for bad in avoidedImages):
+            continue
 
-        # prepare folder for this subtopic
-        topicFolder = os.path.join(parentFolder, subTopicTitle.replace(' ', '_'))
-        os.makedirs(topicFolder, exist_ok=True)
+        # caption heuristics
+        cap = ""
+        parentFig = img.find_parent('figure')
+        if parentFig:
+            capTag = parentFig.find('figcaption') or parentFig.find(class_='thumbcaption')
+            if capTag:
+                cap = capTag.get_text(separator=' ', strip=True)
+        if not cap:
+            capTag = img.find_next('figcaption') or img.find_next(class_='thumbcaption')
+            if capTag:
+                cap = capTag.get_text(separator=' ', strip=True)
+        if not cap:
+            cap = img.get('alt') or img.get('title') or ""
 
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        if cap:
+            cap = summariseCaption(cap)
 
-        for img in soup.find_all('img'):
-            if imagesSaved >= 2:
-                break
+        ext = '.png'
 
-            # pick candidate URL from src/srcset/data-src etc.
-            src = img.get('src') or img.get('data-src') or img.get('data-image-src') or img.get('srcset') or ''
-            if not src:
-                continue
+        local_name = f"img{imagesSaved}{ext}"
+        local_path = os.path.join(topicFolder, local_name)
 
-            # handle srcset lists like "url1 1x, url2 2x" - pick the last candidate url
-            if ',' in src and ' ' in src:
-                candidates = [s.strip() for s in src.split(',') if s.strip()]
-                last = candidates[-1]
-                src = last.split()[0]
+        # download and save
+        try:
+            r = requests.get(link, headers=headers, stream=True, timeout=12)
+            r.raise_for_status()
+            with open(local_path, 'wb') as f:
+                for chunk in r.iter_content(8192):
+                    if chunk:
+                        f.write(chunk)
+            #print(f"Saved: {local_path}")
+            imgs.append(local_path)
+            captions.append(cap)
+            imagesSaved += 1
+        except Exception as e:
+            print(f"Failed to save {link}: {e}")
+            # try next image tag
 
-            # normalise to absolute URL
-            if src.startswith('//'):
-                link = 'https:' + src
-            elif src.startswith('/'):
-                link = urljoin('https://en.wikipedia.org', src)
-            elif src.startswith('http'):
-                link = src
-            else:
-                continue
+    return imgs,captions
 
-            if '/media/math/render/' in link: #skipping maths svgs as cant be saved as png
-                print(f"Skipping math formula image: {link}")
-                continue
+#---------------POWERPOINT FUNCTIONS----------------
 
-            # basic filename and filter check
-            url_path = link.split('?', 1)[0]
-            filename_only = os.path.basename(url_path)
-            if any(bad in filename_only for bad in avoidedImages):
-                continue
+def generatePP(topic,referencesContent,subTopicTitles,subTopicBodies,subTopicImages):
+    powerpointName = '{}\{} Powerpoint.pptx'.format(topic.replace(' ','_'),topic)
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[0]) #title layout
+    title = slide.shapes.title
+    subtitle = slide.placeholders[1]
+        
+    title.text = str(topic)
+    if len(subTopicTitles) > 3:
+        subtitleText = '{}, {}, {} and more'.format(*subTopicTitles[:3])
+    else:
+        subtitleText = ', '.join(subTopicTitles)
+    #adding first few subtopics as title page subtitle
 
-            # caption heuristics
-            cap = ""
-            parentFig = img.find_parent('figure')
-            if parentFig:
-                capTag = parentFig.find('figcaption') or parentFig.find(class_='thumbcaption')
-                if capTag:
-                    cap = capTag.get_text(separator=' ', strip=True)
-            if not cap:
-                capTag = img.find_next('figcaption') or img.find_next(class_='thumbcaption')
-                if capTag:
-                    cap = capTag.get_text(separator=' ', strip=True)
-            if not cap:
-                cap = img.get('alt') or img.get('title') or ""
+    subtitle.text = subtitleText
 
-            if cap:
-                print(f"Old caption: {cap}")
-                cap = summariseCaption(cap)
-                print(f"New caption: {cap}")
+    leftText = True
+    for topicTitle, body, images in zip(subTopicTitles, subTopicBodies, subTopicImages):
+        leftText,presentation = addSlide(leftText,presentation,topicTitle,body,images)
 
-            ext = '.png'
+    presentation = addRefsSlide(powerpointName,presentation,referencesContent)
 
-            local_name = f"img{imagesSaved}{ext}"
-            local_path = os.path.join(topicFolder, local_name)
+    return presentation,powerpointName
 
-            # download and save
-            try:
-                r = requests.get(link, headers=headers, stream=True, timeout=12)
-                r.raise_for_status()
-                with open(local_path, 'wb') as f:
-                    for chunk in r.iter_content(8192):
-                        if chunk:
-                            f.write(chunk)
-                print(f"Saved: {local_path}")
-                imgs.append(local_path)
-                captions.append(cap)
-                imagesSaved += 1
-            except Exception as e:
-                print(f"Failed to save {link}: {e}")
-                # try next image tag
-
-        # at this point imgs and captions have up to 2 saved items each
-        if not imgs:
-            print(f"No images saved for subtopic: {subTopicTitle}")
-
-        subTopicImages.append(list(zip(imgs, captions)))
-
-        subTopicContent = re.sub(r'\[[^\]]*\]', '', removeTags(content)) #get just p tags and get rid of square brackets
-        subTopicTitles.append(subTopicTitle)
-        subTopicBodies.append(subTopicContent)
-
-        print(subTopicTitle)
-        print(subTopicContent[:1000])
-        print(subTopicImages)
-
-#Make powerpoint:
-
-powerpointName = '{}\{} Powerpoint.pptx'.format(topic.replace(' ','_'),topic)
-presentation = Presentation()
-slide = presentation.slides.add_slide(presentation.slide_layouts[0]) #title layout
-title = slide.shapes.title
-subtitle = slide.placeholders[1]
-    
-title.text = str(topic)
-if len(subTopicTitles) > 3:
-    subtitleText = '{}, {}, {} and more'.format(*subTopicTitles[:3])
-else:
-    subtitleText = ', '.join(subTopicTitles)
-#adding first few subtopics as title page subtitle
-
-subtitle.text = subtitleText
-
-
-leftText = True
-for topicTitle, body, images in zip(subTopicTitles, subTopicBodies, subTopicImages):
+def addSlide(leftText,presentation,topicTitle,body,images):
     print("ADDING SLIDE:", topicTitle)
 
     pictureSlide = bool(images)
-    imageCount = len(images) # (1) Helper variable for image count
+    imageCount = len(images)
 
     if pictureSlide:
         bullet_slide_layout = presentation.slide_layouts[3] #picture and text layout
@@ -335,15 +332,31 @@ for topicTitle, body, images in zip(subTopicTitles, subTopicBodies, subTopicImag
         bullet_slide_layout = presentation.slide_layouts[1] #just text layout
 
     slide = presentation.slides.add_slide(bullet_slide_layout)
+
     #add speaker notes below
     notes_slide = slide.notes_slide
-    notes_slide.notes_text_frame.text = body
+    notes_slide.notes_text_frame.text = body[:5000]
 
+    #print(len(body))
 
-    slideContent = makeBulletPoints(body) # Uses AI
+    if len(body)>7500:
+        start_chunk = body[:5000]
+        end_chunk = body[-2500:]
+        body = f"{start_chunk}\n\n[...CONTENT OMITTED...]\n\n{end_chunk}"
+
+    #generate bullet points
+    slideContent = makeBulletPoints(body)
+    #print(len(slideContent))
+    #print(len(slideContent.split('\n')))
+    #print(len(body))
+
+    lines = slideContent.split('\n')
+    linesWithoutDashes = [line.lstrip('- ') for line in lines]
+    slideContent = '\n'.join(linesWithoutDashes)
 
     if pictureSlide:
-        fontSize = 14 #smaller font if image on slide
+        leftText = not(leftText)
+        fontSize = 18 #smaller font if image on slide
         if leftText:
             subtitle = slide.placeholders[1] # Text is left
             slide.shapes._spTree.remove(slide.placeholders[2]._element) # Remove right placeholder
@@ -354,10 +367,17 @@ for topicTitle, body, images in zip(subTopicTitles, subTopicBodies, subTopicImag
         subtitle = slide.placeholders[1]
         fontSize = 24 #larger text if no images
 
-    if len(slideContent) > 800:
-        fontSize-=6
+    if len(slideContent) > 700:
+        fontSize-=4
     elif len(slideContent) > 550:
         fontSize-=2
+    elif len(slideContent) < 400:
+        fontSize+=2
+
+    if len(slideContent.split('\n'))<=5:
+        fontSize+=2
+    elif len(slideContent.split('\n'))>=8:
+        fontSize-=1
 
     title = slide.shapes.title
     title.text = topicTitle
@@ -369,7 +389,6 @@ for topicTitle, body, images in zip(subTopicTitles, subTopicBodies, subTopicImag
         font = paragraph.font
         font.size = Pt(fontSize)
 
-    # --- (1) TWO IMAGE PLACEMENT LOGIC ---
     if pictureSlide:
         # Define the image area boundaries (based on slide layout 3)
         if leftText:
@@ -391,7 +410,6 @@ for topicTitle, body, images in zip(subTopicTitles, subTopicBodies, subTopicImag
             # Place picture centered in the allocated area
             slide.shapes.add_picture(localImagePath1, IMAGE_AREA_LEFT + Inches(widthLost/2), IMAGE_AREA_TOP + Inches(heightLost/2), Inches(width), Inches(height))
             
-            # (3) Add Caption below the single image
             if captionText1:
                 caption_top = IMAGE_AREA_TOP + Inches(height) + Inches(heightLost/2) + Inches(0.1) # 0.1 inch gap below image
                 caption_box = slide.shapes.add_textbox(IMAGE_AREA_LEFT, caption_top, IMAGE_AREA_WIDTH, Inches(0.5))
@@ -418,7 +436,6 @@ for topicTitle, body, images in zip(subTopicTitles, subTopicBodies, subTopicImag
             top_y1 = IMAGE_AREA_TOP + Inches(heightLost1/2)
             slide.shapes.add_picture(localImagePath1, IMAGE_AREA_LEFT + Inches(widthLost1/2), top_y1, Inches(width1), Inches(height1))
             
-            # (3) Add Caption 1
             if captionText1:
                 caption_top1 = top_y1 + Inches(height1) + Inches(0.1)
                 caption_box1 = slide.shapes.add_textbox(IMAGE_AREA_LEFT, caption_top1-Inches(0.1), IMAGE_AREA_WIDTH, Inches(0.3))
@@ -433,7 +450,6 @@ for topicTitle, body, images in zip(subTopicTitles, subTopicBodies, subTopicImag
             top_y2 = IMAGE_AREA_TOP + Inches(MAX_H_STACKED) + Inches(GAP) + Inches(heightLost2/2)
             slide.shapes.add_picture(localImagePath2, IMAGE_AREA_LEFT + Inches(widthLost2/2), top_y2+Inches(0.1), Inches(width2), Inches(height2))
 
-            # (3) Add Caption 2
             if captionText2:
                 caption_top2 = top_y2 + Inches(height2) + Inches(0.1)
                 caption_box2 = slide.shapes.add_textbox(IMAGE_AREA_LEFT, caption_top2, IMAGE_AREA_WIDTH, Inches(0.3))
@@ -442,12 +458,78 @@ for topicTitle, body, images in zip(subTopicTitles, subTopicBodies, subTopicImag
                 text_frame2.paragraphs[0].alignment = PP_ALIGN.CENTER
                 text_frame2.paragraphs[0].font.size = Pt(8)
                 text_frame2.paragraphs[0].font.italic = True
-            
-    # Toggle position for the next slide (alternating text/image layout)
-    leftText = not leftText
 
-# Save and open the PowerPoint
-os.makedirs(os.path.dirname(powerpointName), exist_ok=True)
-presentation.save(powerpointName)
-os.startfile(powerpointName)
+    return leftText,presentation
 
+def addRefsSlide(powerpointName,presentation,referencesContent):
+    print("ADDING SLIDE: References")
+    slide_layout = presentation.slide_layouts[1]
+    slide = presentation.slides.add_slide(slide_layout)
+    title = slide.shapes.title
+    title.text = 'References'
+
+    body = slide.placeholders[1]  # main body placeholder
+    tf = body.text_frame
+    tf.clear()
+
+    p = tf.paragraphs[0]
+    p.level = 0
+    run1 = p.add_run()
+    run1.text = "Main source: "
+    run2 = p.add_run()
+    run2.text = url
+    run2.hyperlink.address = url
+    run1.font.size = Pt(20)
+    run2.font.size = Pt(20)
+
+    p = tf.add_paragraph()
+    p.level = 0
+    p.text = referencesContent
+    p.font.size = Pt(12)
+
+    os.makedirs(os.path.dirname(powerpointName), exist_ok=True)
+    presentation.save(powerpointName)
+
+
+#-------------------------------------------------------------------------------------------------------------------
+
+ai = OpenAI(api_key=open("openAI_key.txt").read().strip())
+headers = {"User-Agent": "Mozilla/5.0"}
+
+subTopicTitles = []
+subTopicBodies = []
+subTopicImages = []
+
+avoidedContents = ['Citations','Notes','See also','Sources','Further reading','External links','Gallery','Bibliography','Works cited','Collaborators','References','References 2']
+avoidedImages = [
+    'Question_book-new.svg',
+    'Nuvola_apps_kaboodle.svg',
+    'Ambox_current_red_Asia_Australia.svg',
+    'Information_icon4.svg',
+    'Climate_change_icon',
+    'Symbol_list_class.svg',
+    'Ambox_rewrite.svg',
+    'Ambox_important.svg',
+    'Wiki_letter_w_cropped.svg',
+    'Commons-logo.svg',
+    'Wikibooks-logo-en-noslogan.svg',
+    'Semi-protection-shackle-keyhole.svg',
+    'Wiki_letter_w.svg',
+    'Red_flag_II.svg',
+    'A_coloured_voting_box.svg',
+    'Symbol-hammer-and-sickle.svg',
+    '40px']
+
+if __name__ == "__main__":
+    url,topic,parentFolder = searchWikipedia()
+    response = requests.get(url, headers=headers)
+    html = response.text
+
+    print('Generating Powerpoint!')
+    start=time.time()
+    referencesContent,subTopicTitles,subTopicBodies,subTopicImages = splitContent(html)
+    presentation,powerpointName = generatePP(topic,referencesContent,subTopicTitles,subTopicBodies,subTopicImages)
+    end = time.time()
+    print(f'PowerPoint Generated! ({round(end-start, 1)} seconds)')
+
+    os.startfile(powerpointName)
