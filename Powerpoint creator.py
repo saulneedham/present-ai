@@ -493,7 +493,7 @@ def addRefsSlide(powerpointName,presentation,referencesContent):
 
 #-------------------------------------------------------------------------------------------------------------------
 
-ai = OpenAI(api_key=open("openAI_key.txt").read().strip())
+ai = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 headers = {"User-Agent": "Mozilla/5.0"}
 
 subTopicTitles = []
@@ -533,3 +533,4 @@ if __name__ == "__main__":
     print(f'PowerPoint Generated! ({round(end-start, 1)} seconds)')
 
     os.startfile(powerpointName)
+
