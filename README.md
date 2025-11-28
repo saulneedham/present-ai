@@ -5,7 +5,12 @@ Automatically generates professional PowerPoint presentations from online source
 
 PowerPoint Creator.py – Main program that scrapes content, generates summaries, and builds slides.
 
-openAI_key.txt – Text file storing your OpenAI API key (single line).
+Setting the OpenAI API Key:
+
+System | Code
+--- | --- 
+*macOS / Linux (bash/zsh)* | `export OPENAI_API_KEY="your_key_here"`  
+*Windows PowerShell* | `setx OPENAI_API_KEY "your_key_here"`
 
 ## 🛠 Built With
 
